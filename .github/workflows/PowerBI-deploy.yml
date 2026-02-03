@@ -34,10 +34,11 @@ jobs:
       - name: Determine Workspace ID (Production)
         id: set-workspace
         run: |
-          $workspaceId = "${{ vars.WORKSPACE_ID_PROD }}"
+          # Production Workspace ID
+          $workspaceId = "0fe5e552-a9ff-493f-92a0-f8bc3ad41e91"
 
           if (-not $workspaceId) {
-            Write-Error "WORKSPACE_ID_PROD repository variable is not set"
+            Write-Error "Production workspace ID is not set"
             exit 1
           }
 
@@ -201,12 +202,4 @@ jobs:
 
             Write-Host "::group::Rebinding $reportName → $datasetName ($dsId)"
             try {
-              pbicli report rebind --workspace $ws --report "$reportName" --target-dataset $dsId
-              Write-Host "Rebind successful"
-            } catch {
-              Write-Error "Rebind failed: $_"
-            }
-            Write-Host "::endgroup::"
-          }
-        shell: pwsh
- 
+              pbicli report rebind --workspace $
