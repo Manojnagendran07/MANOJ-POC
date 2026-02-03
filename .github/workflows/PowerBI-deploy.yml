@@ -35,7 +35,7 @@ jobs:
         id: set-workspace
         run: |
           # Production Workspace ID
-          $workspaceId = "0fe5e552-a9ff-493f-92a0-f8bc3ad41e91"
+          $workspaceId = "70610589-66d2-47cb-9aab-34e7624e7d28"
 
           if (-not $workspaceId) {
             Write-Error "Production workspace ID is not set"
@@ -202,4 +202,9 @@ jobs:
 
             Write-Host "::group::Rebinding $reportName → $datasetName ($dsId)"
             try {
-              pbicli report rebind --workspace $
+              Invoke-Expression $rebindCommand
+              Write-Host "Successfully rebound report '$reportName' to dataset '$datasetName'"
+            } catch {
+              Write-Host "Failed to rebind report '$reportName' to dataset '$datasetName'. Error: $_"
+            }
+          }
