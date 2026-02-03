@@ -2,15 +2,15 @@ name: Deploy Power BI (Prod)
 
 on:
   push:
-    branches: [ main ]
-    # Run only when the PBIX changes (remove this 'paths' block to run on ANY change to main)
-    paths:
-      - 'Reports/Samplereport.pbix'
+    branches: [ main ]        # Adjust if your default is 'master'
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: windows-latest
+
+    env:
+      PBI_FILE: Reports/Samplereport.pbix
 
     steps:
       - name: Checkout (with Git LFS)
@@ -23,37 +23,35 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install pbicli and add to PATH
+      - name: Install pbicli and add global npm to PATH
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           npm -v
           node -v
+
+          # Install Power BI CLI
           npm install -g @powerbi-cli/powerbi-cli
 
-          # Add global npm bin to PATH for subsequent steps
+          # Add npm global prefix to PATH so pbicli is accessible in subsequent steps
           $npmPrefix = npm config get prefix
-          if (-not (Test-Path $npmPrefix)) {
-            Write-Error "Unable to locate npm global prefix."
-            exit 1
-          }
+          if (-not (Test-Path $npmPrefix)) { throw "Unable to locate npm global prefix: $npmPrefix" }
           Write-Host "npm global prefix: $npmPrefix"
-          # On Windows, pbicli(.cmd) is directly inside prefix (e.g., %APPDATA%\npm)
-          $globalBin = $npmPrefix
-          $globalBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $npmPrefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+          # Verify pbicli is available
           pbicli --version
 
       - name: Validate PBIX exists
         shell: pwsh
         run: |
-          $path = "Reports/Samplereport.pbix"
+          $ErrorActionPreference = 'Stop'
+          $path = "$env:PBI_FILE"
           if (-not (Test-Path $path)) {
             Write-Host "Working directory: $(Get-Location)"
             Write-Host "Listing repo to help diagnose:"
             Get-ChildItem -Recurse -Force | Select-Object FullName
-            Write-Error "PBIX not found at '$path'. Check the file path and ensure LFS is fetching the file."
-            exit 1
+            throw "PBIX not found at '$path'. Check the file path and ensure LFS fetched the file."
           }
           $size = (Get-Item $path).Length
           Write-Host "Found PBIX at '$path' ($([Math]::Round($size/1MB,2)) MB)."
@@ -69,8 +67,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:CLIENT_ID) -or
               [string]::IsNullOrWhiteSpace($env:CLIENT_SECRET) -or
               [string]::IsNullOrWhiteSpace($env:TENANT_ID)) {
-            Write-Error "CLIENT_ID/CLIENT_SECRET/TENANT_ID secrets are missing."
-            exit 1
+            throw "CLIENT_ID/CLIENT_SECRET/TENANT_ID secrets are missing."
           }
           pbicli login --service-principal --principal $env:CLIENT_ID --secret $env:CLIENT_SECRET --tenant $env:TENANT_ID
           Write-Host "Authenticated to Power BI."
@@ -82,16 +79,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:PROD_WORKSPACE_ID)) {
-            Write-Error "Secret PROD_WORKSPACE_ID is not set."
-            exit 1
+            throw "Secret PROD_WORKSPACE_ID is not set."
           }
           $ws = $env:PROD_WORKSPACE_ID
-          $file = "Reports/Samplereport.pbix"
+          $file = "$env:PBI_FILE"
           Write-Host "Publishing '$file' to workspace '$ws'..."
           pbicli import pbix -w "$ws" --file "$file" --conflict CreateOrOverwrite
           Write-Host "Publish completed."
 
-      # Optional: rebind if you use federated/composite model mapping in federated-model.txt
+      # Optional: rebind using federated-model.txt (if you use composite/federated models)
       - name: (Optional) Rebind reports from federated-model.txt
         shell: pwsh
         env:
@@ -137,4 +133,4 @@ jobs:
             Write-Host "Rebinding report '$($b.Report)' ($rid) -> dataset '$($b.Dataset)' ($did)"
             pbicli report rebind --workspace "$workspaceId" --report "$rid" --target-dataset "$did"
           }
-          Write-Host "Rebind step completed." 
+          Write-Host "Rebind step completed."
