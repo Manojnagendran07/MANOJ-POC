@@ -1,36 +1,80 @@
-# This is a basic workflow to help you get started with Actions
+name: CI / Deploy
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "feature" branch
   push:
-    branches: [ "feature" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
+      - dev
 
-  # Allows you to run this workflow manually from the Actions tab
+  # Optional: keep manual trigger if you need to re-run manually sometimes
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  build-and-deploy:
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    # Environment + secrets protection (optional but recommended for prod)
+    # Uncomment and create environments in repo settings if needed
+    # environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+      # Example: Azure login using your repository secrets
+      # (uncomment/adapt based on what you actually need — e.g. az cli, Power Platform, etc.)
+      - name: Azure Login
+        if: always()  # or remove if not needed
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          client-secret: ${{ secrets.CLIENT_SECRET }}
+          tenant-id: ${{ secrets.TENANT_ID }}
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      # Example: If you need to use DEVWORKSPACEID (e.g. Power Platform / DevOps workspace)
+      - name: Show workspace ID (example)
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          echo "Using Dev Workspace ID: ${{ secrets.DEVWORKSPACEID }}"
+
+      # ────────────────────────────────────────────────
+      #   ← Replace these placeholder steps with your real build / test / deploy commands →
+      # ────────────────────────────────────────────────
+      - name: Setup your environment (example)
+        run: |
+          echo "Install dependencies, build your app here..."
+          # npm ci
+          # dotnet restore
+          # etc.
+
+      - name: Build
+        run: |
+          echo "Building the project..."
+          # npm run build
+          # dotnet build
+          # etc.
+
+      - name: Test
+        run: |
+          echo "Running tests..."
+          # npm test
+          # dotnet test
+          # etc.
+
+      - name: Deploy to ${{ github.ref_name == 'main' && 'Production' || 'Dev/Staging' }}
+        run: |
+          echo "Deploying to ${{ github.ref_name }} branch environment..."
+          echo "Using CLIENT_ID = ${{ secrets.CLIENT_ID }}"
+          echo "Using TENANT_ID = ${{ secrets.TENANT_ID }}"
+          echo "Using DEVWORKSPACEID = ${{ secrets.DEVWORKSPACEID }}"
+          
+          # Your real deployment commands here, examples:
+          # az deployment group create --resource-group my-rg ...
+          # pac auth create --url https://... --clientid ${{ secrets.CLIENT_ID }} ...
+          # npm run deploy
+          # etc.
+
+      # Optional: Notify or cleanup
+      - name: Workflow summary
+        if: always()
+        run: |
+          echo "Workflow finished for ${{ github.ref_name }} (commit: ${{ github.sha }})"
