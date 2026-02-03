@@ -1,212 +1,78 @@
-name: Deploy Power BI Reports (Production - main)
+name: Power BI CI/CD Deployment
 
 on:
   push:
     branches:
-      - main
+      - main   # ✅ Trigger only on main branch
 
 jobs:
-  deploy:
+  deploy-pbix:
     runs-on: windows-latest
 
     env:
-      REPO_NAME: ${{ github.event.repository.name }}
+      CLIENT_ID: ${{ secrets.CLIENT_ID }}
+      CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+      TENANT_ID: ${{ secrets.TENANT_ID }}
+      DEV_WORKSPACE_ID: ${{ secrets.DEVWORKSPACEID }}
+      PROD_WORKSPACE_ID: ${{ secrets.PROD_WORKSPACE_ID }}
 
     steps:
-      - name: Checkout repository (with LFS)
+      - name: Install Modern Power BI CLI
+        run: |
+          npm uninstall -g powerbi-cli
+          npm install -g @powerbi-cli/powerbi-cli
+          pbicli version
+        shell: powershell
+
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
-      - name: Install pbicli globally
-        run: npm install -g @powerbi-cli/powerbi-cli
-        shell: pwsh
-
-      - name: Authenticate with Power BI (Service Principal)
-        env:
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          TENANT_ID: ${{ secrets.TENANT_ID }}
+      - name: Prepare PBIX Files
         run: |
-          pbicli login --service-principal --principal "$env:CLIENT_ID" --secret "$env:CLIENT_SECRET" --tenant "$env:TENANT_ID"
-        shell: pwsh
+          $absPath = "${{ github.workspace }}\pbix-temp"
+          if (-not (Test-Path $absPath)) { New-Item -ItemType Directory -Path $absPath -Force }
+          $allFiles = Get-ChildItem -Path "${{ github.workspace }}" -Filter *.pbix -Recurse
+          foreach ($file in $allFiles) {
+              $cleanName = ($file.BaseName -replace '[^a-zA-Z0-9]', '') + ".pbix"
+              Copy-Item -Path $file.FullName -Destination (Join-Path $absPath $cleanName) -Force
+          }
+        shell: powershell
 
-      - name: Determine Workspace ID (Production)
-        id: set-workspace
+      - name: Login to Power BI
         run: |
-          $workspaceId = "${{ vars.WORKSPACE_ID_PROD }}"
+          pbicli login --service-principal `
+            --principal "${{ env.CLIENT_ID }}" `
+            --secret "${{ env.CLIENT_SECRET }}" `
+            --tenant "${{ env.TENANT_ID }}"
+        shell: powershell
 
-          if (-not $workspaceId) {
-            Write-Error "WORKSPACE_ID_PROD repository variable is not set"
-            exit 1
+      - name: Deploy to Power BI Workspace Root
+        run: |
+          $branch = "${{ github.ref_name }}"
+          $absPath = "${{ github.workspace }}\pbix-temp"
+
+          # Since we only trigger on main, you can decide which workspace to use.
+          # Example: deploy to PROD only
+          $workspaceId = "${{ env.PROD_WORKSPACE_ID }}"
+
+          $filesToDeploy = Get-ChildItem -Path "$absPath\*.pbix"
+
+          if ($filesToDeploy.Count -eq 0) {
+              Write-Error "No .pbix files found in $absPath to deploy!"
+              exit 1
           }
 
-          echo "workspaceId=$workspaceId" >> $env:GITHUB_OUTPUT
-          Write-Host "Using Production workspace: $workspaceId"
-        shell: pwsh
+          foreach ($file in $filesToDeploy) {
+              Write-Host "----------------------------------------------"
+              Write-Host "Target Workspace: $workspaceId (Branch: $branch)"
+              Write-Host "Deploying File: $($file.Name)"
 
-      - name: List all .pbix files
-        id: find-pbix
-        run: |
-          $pbixFiles = Get-ChildItem -Path . -Recurse -Filter *.pbix | Select-Object -ExpandProperty FullName
+              pbicli import pbix `
+                --workspace "$workspaceId" `
+                --file "$($file.FullName)" `
+                --name "$($file.BaseName)" `
+                --conflict CreateOrOverwrite
 
-          if ($pbixFiles.Count -eq 0) {
-            Write-Host "No .pbix files found in the repository."
-          } else {
-            Write-Host "Found PBIX files:"
-            $pbixFiles | ForEach-Object { Write-Host $_ }
+              Write-Host "Successfully deployed $($file.Name) to the workspace root."
           }
-
-          $pbixList = $pbixFiles -join ';'
-          echo "pbixFiles=$pbixList" >> $env:GITHUB_OUTPUT
-        shell: pwsh
-
-      - name: Rename .pbix files (reponame-reportname.pbix)
-        if: steps.find-pbix.outputs.pbixFiles != ''
-        id: rename-pbix
-        run: |
-          $pbixList = "${{ steps.find-pbix.outputs.pbixFiles }}"
-          if (-not $pbixList) { exit 0 }
-
-          $pbixArray = $pbixList -split ';'
-          $renamed = @()
-
-          foreach ($file in $pbixArray) {
-            $dir  = Split-Path $file -Parent
-            $name = [IO.Path]::GetFileNameWithoutExtension($file)
-            $newName = "${{ env.REPO_NAME }}-$name.pbix"
-            $newPath = Join-Path $dir $newName
-
-            Rename-Item -Path $file -NewName $newName -Force
-            Write-Host "Renamed: $file → $newPath"
-            $renamed += $newPath
-          }
-
-          $newList = $renamed -join ';'
-          echo "pbixFiles=$newList" >> $env:GITHUB_OUTPUT
-        shell: pwsh
-
-      - name: Get existing reports & datasets in workspace
-        if: steps.find-pbix.outputs.pbixFiles != ''
-        id: get-existing
-        run: |
-          $ws = "${{ steps.set-workspace.outputs.workspaceId }}"
-
-          $reportsJson = pbicli report list --workspace $ws --output json
-          $reports = ($reportsJson | ConvertFrom-Json).name
-
-          $datasetsJson = pbicli dataset list --workspace $ws --output json
-          $datasets = ($datasetsJson | ConvertFrom-Json).name
-
-          Write-Host "::group::Reports in workspace"
-          if ($reports) { $reports | ForEach-Object { Write-Host $_ } } else { Write-Host "No reports found" }
-          Write-Host "::endgroup::"
-
-          Write-Host "::group::Datasets in workspace"
-          if ($datasets) { $datasets | ForEach-Object { Write-Host $_ } } else { Write-Host "No datasets found" }
-          Write-Host "::endgroup::"
-
-          echo "reports=$($reports -join ';')" >> $env:GITHUB_OUTPUT
-          echo "datasets=$($datasets -join ';')" >> $env:GITHUB_OUTPUT
-        shell: pwsh
-
-      - name: Publish renamed PBIX files
-        if: steps.rename-pbix.outputs.pbixFiles != ''
-        run: |
-          $ws = "${{ steps.set-workspace.outputs.workspaceId }}"
-          $files = "${{ steps.rename-pbix.outputs.pbixFiles }}" -split ';'
-
-          foreach ($file in $files) {
-            Write-Host "::group::Publishing $file"
-            pbicli import pbix -w $ws --file "$file" --conflict CreateOrOverwrite
-            Write-Host "Published successfully: $file"
-            Write-Host "::endgroup::"
-          }
-        shell: pwsh
-
-      - name: Delete orphaned reports & datasets (only those with repo prefix)
-        if: steps.rename-pbix.outputs.pbixFiles != ''
-        run: |
-          $ws           = "${{ steps.set-workspace.outputs.workspaceId }}"
-          $pbixList     = "${{ steps.rename-pbix.outputs.pbixFiles }}"
-          $reportsList  = "${{ steps.get-existing.outputs.reports }}"
-          $datasetsList = "${{ steps.get-existing.outputs.datasets }}"
-
-          $pbixArray     = if ($pbixList)     { $pbixList -split ';' }     else { @() }
-          $reportsArray  = if ($reportsList)  { $reportsList -split ';' }  else { @() }
-          $datasetsArray = if ($datasetsList) { $datasetsList -split ';' } else { @() }
-
-          $repoPrefix = "${{ env.REPO_NAME }}-"
-
-          $pbixNames = $pbixArray | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_) }
-
-          $myReports  = $reportsArray  | Where-Object { $_.StartsWith($repoPrefix) }
-          $myDatasets = $datasetsArray | Where-Object { $_.StartsWith($repoPrefix) }
-
-          Write-Host "::group::Deleting orphaned reports"
-          foreach ($report in $myReports) {
-            if ($pbixNames -notcontains $report) {
-              Write-Host "Deleting orphaned report: $report"
-              pbicli report delete --workspace $ws --report "$report" || Write-Warning "Delete failed (may not exist)"
-            }
-          }
-          Write-Host "::endgroup::"
-
-          Write-Host "::group::Deleting orphaned datasets"
-          foreach ($ds in $myDatasets) {
-            if ($pbixNames -notcontains $ds) {
-              Write-Host "Deleting orphaned dataset: $ds"
-              pbicli dataset delete --workspace $ws --dataset "$ds" || Write-Warning "Delete failed (may not exist)"
-            }
-          }
-          Write-Host "::endgroup::"
-        shell: pwsh
-
-      - name: Rebind reports according to federated-model.txt (if exists)
-        if: always()
-        run: |
-          $file = ".\federated-model.txt"
-          if (-not (Test-Path $file)) {
-            Write-Host "No federated-model.txt found → skipping rebind step"
-            exit 0
-          }
-
-          $ws = "${{ steps.set-workspace.outputs.workspaceId }}"
-          $repoPrefix = "${{ env.REPO_NAME }}-"
-
-          $bindings = Get-Content $file `
-            | Select-Object -Skip 1 `
-            | Where-Object { $_ -match '^\s*[^#]' } `
-            | ForEach-Object {
-                if ($_ -match "^(.+?)\s*:\s*(.+)$") {
-                  [PSCustomObject]@{ Report = $matches[1].Trim(); Dataset = $matches[2].Trim() }
-                }
-              }
-
-          $dsJson = pbicli dataset list --workspace $ws --output json
-          $datasets = ($dsJson | ConvertFrom-Json) | Select-Object id, name
-          $dsDict = @{}
-          foreach ($d in $datasets) { $dsDict[$d.name] = $d.id }
-
-          foreach ($b in $bindings) {
-            $reportName  = $repoPrefix + $b.Report
-            $datasetName = $repoPrefix + $b.Dataset
-
-            if (-not $dsDict.ContainsKey($datasetName)) {
-              Write-Warning "Dataset not found: $datasetName → skipping rebind for $reportName"
-              continue
-            }
-
-            $dsId = $dsDict[$datasetName]
-
-            Write-Host "::group::Rebinding $reportName → $datasetName ($dsId)"
-            try {
-              pbicli report rebind --workspace $ws --report "$reportName" --target-dataset $dsId
-              Write-Host "Rebind successful"
-            } catch {
-              Write-Error "Rebind failed: $_"
-            }
-            Write-Host "::endgroup::"
-          }
-        shell: pwsh
- 
+        shell: powershell
