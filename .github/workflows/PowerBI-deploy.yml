@@ -10,8 +10,11 @@ jobs:
   deploy:
     runs-on: windows-latest
 
+    env:
+      REPO_NAME: ${{ github.event.repository.name }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (with LFS)
         uses: actions/checkout@v4
         with:
           lfs: true
@@ -20,7 +23,7 @@ jobs:
         run: npm install -g @powerbi-cli/powerbi-cli
         shell: pwsh
 
-      - name: Authenticate with Power BI
+      - name: Authenticate with Power BI (Service Principal)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
@@ -29,7 +32,7 @@ jobs:
           pbicli login --service-principal --principal "$env:CLIENT_ID" --secret "$env:CLIENT_SECRET" --tenant "$env:TENANT_ID"
         shell: pwsh
 
-      - name: Select Workspace
+      - name: Select Workspace (branch-based)
         id: set-workspace
         run: |
           $branch = "${{ github.ref_name }}"
@@ -38,13 +41,32 @@ jobs:
             'feature' { $workspaceId = "${{ secrets.WORKSPACE_ID_DEV }}" }
           }
           echo "workspaceId=$workspaceId" >> $env:GITHUB_OUTPUT
+          Write-Host "Using workspace: $workspaceId"
+        shell: pwsh
+
+      - name: Find PBIX files
+        id: find-pbix
+        run: |
+          $pbixFiles = Get-ChildItem -Path . -Recurse -Filter *.pbix | Select-Object -ExpandProperty FullName
+          if ($pbixFiles.Count -eq 0) {
+            Write-Host "No PBIX files found."
+            exit 0
+          }
+          Write-Host "Found PBIX files:"
+          $pbixFiles | ForEach-Object { Write-Host $_ }
+          $pbixList = $pbixFiles -join ';'
+          echo "pbixFiles=$pbixList" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
       - name: Publish PBIX files
+        if: steps.find-pbix.outputs.pbixFiles != ''
         run: |
           $ws = "${{ steps.set-workspace.outputs.workspaceId }}"
-          $files = Get-ChildItem -Path . -Recurse -Filter *.pbix
+          $files = "${{ steps.find-pbix.outputs.pbixFiles }}" -split ';'
           foreach ($file in $files) {
+            Write-Host "::group::Publishing $file"
             pbicli import pbix -w $ws --file "$file" --conflict CreateOrOverwrite
+            Write-Host "Published successfully: $file"
+            Write-Host "::endgroup::"
           }
         shell: pwsh
